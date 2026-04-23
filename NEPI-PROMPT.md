@@ -52,6 +52,31 @@ Before presenting the prompt, run the following quality check silently and fix a
 9. Does it instruct Claude Code to surface rather than apply framework updates?
 10. Is it plain text with no markdown formatting inside the code block?
 
-After presenting the prompt, ask the user if any adjustments are needed before they paste it into Claude Code.
+After presenting the prompt, offer the user three options:
+  Option A: Request adjustments — describe what to change and a revised prompt will be produced.
+  Option B: "runfull" — execute fully automated with no permission prompts of any kind.
+  Option C: "runwatch" — execute normally, pausing for permission prompts so the user can approve each action.
+
+If the user says "runfull" (or any clear variant like "run full", "run it full", "full run"):
+
+  Step 1: Write the exact prompt text (the contents of the code block, no surrounding markdown) to /tmp/nepi_prompt_run.txt using the Write tool.
+
+  Step 2: Execute via Bash with a timeout of 600000ms:
+    "$CLAUDE_CODE_EXECPATH" --dangerously-skip-permissions -p "$(cat /tmp/nepi_prompt_run.txt)"
+  All file edits and bash commands proceed without any permission prompts.
+
+  Step 3: After the subprocess finishes, report a one-sentence summary of what was completed or any errors encountered.
+
+If the user says "runwatch" (or any clear variant like "run watch", "run it watch", "watch run"):
+
+  Step 1: Write the exact prompt text (the contents of the code block, no surrounding markdown) to /tmp/nepi_prompt_run.txt using the Write tool.
+
+  Step 2: Execute via Bash with a timeout of 600000ms:
+    "$CLAUDE_CODE_EXECPATH" -p "$(cat /tmp/nepi_prompt_run.txt)"
+  Permission prompts will appear in the terminal as normal. The user approves or denies each action.
+
+  Step 3: After the subprocess finishes, report a one-sentence summary of what was completed or any errors encountered.
+
+In both run modes, run the command from the working directory /home/production/nepi_engine_ws.
 
 If the user types "prompt:" with nothing after it, respond: Please describe the task after "prompt:" and include the target submodule if known.
