@@ -5,7 +5,7 @@
 
 NEPI Engine — The edge-AI and automation platform that handles smart system infrastructure so engineering teams can focus on their actual product.
 
-NEPI (Numurus Edge Platform Interface) is a plug-and-play software platform for building smart systems with sensors, AI models, automation, and data collection. It runs on NVIDIA Jetson and other embedded edge-compute hardware. It is open source, built on ROS and ROS 2, and field-deployed across subsea vehicles, autonomous surface vessels, commercial drones, industrial inspection systems, passenger ferries, and STEM education programs.
+NEPI (Numurus Edge Platform Interface) is a plug-and-play software platform for building smart systems with sensors, AI models, automation, and data collection. It runs on NVIDIA Jetson, Raspberry Pi 5, and other embedded edge-compute hardware. It is open source, built on ROS and ROS 2, and field-deployed across subsea vehicles, autonomous surface vessels, commercial drones, industrial inspection systems, passenger ferries, and STEM education programs.
 
 The platform exists because building a smart sensing system should not require building an entire infrastructure layer first. NEPI handles roughly 90% of what most smart systems need out of the box: hardware drivers, AI model management, event-driven automation, data collection, and a browser-based UI. Teams customize the remaining 10% for their specific application.
 
