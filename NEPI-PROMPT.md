@@ -23,7 +23,9 @@ RULE 2: Begin with the framework file read sequence, adapted to the task:
 
 RULE 3: State the target repo and exact path being modified.
 
-RULE 4: Sequence the work as numbered steps. At the start of each step, print a single-line banner exactly in the form ===== STEP n/N: <short title> ===== so progress is greppable in the run log. Each step ends with a report before the next step begins.
+RULE 4: Sequence the work as numbered steps. At the start of each step, print a single-line banner exactly in the form ===== STEP n/N: <short title> ===== so progress is greppable in the run log. At the end of each step, print a brief report of what that step found or changed, then continue immediately into the next step within the same run. The report is a checkpoint, not a stopping point. Never instruct Claude Code to stop, halt, pause, wait, or "stop before Step N" between steps — in a headless run that phrasing is read literally and terminates the run after the first step. The run proceeds through all N steps in a single pass and stops only at the end, or at the one clarification pause defined in RULE 4A.
+
+RULE 4A: The run may pause before completion in exactly one situation. If, after finishing the first step (the Explore/read step where all framework documents and target files are read), Claude Code has a genuine blocking question it cannot resolve from the codebase, the framework documents, or sensible defaults, it prints a single line beginning NEEDS INPUT: followed by one specific question, and stops there. It must not manufacture a question in order to pause — if the first step resolves everything, it runs straight through to the end. All blocking questions are raised at the end of the first step or not at all; later steps never pause for input. When the user answers, the run resumes from where it paused (same session) and continues to completion.
 
 RULE 5: For Creation and Development Support tasks, include an explicit Explore step: read all relevant existing files in the target path and report what you find before writing any code.
 
@@ -36,7 +38,7 @@ RULE 7: State the Python naming convention rules explicitly for any task involvi
 
 RULE 8: Instruct Claude Code to surface, not apply, any changes that would update framework files (NEPI-LORE.md, NEPI-CODEX.md, NEPI-FORGE.md, top-level CLAUDE.md). Those are reported in the final output only.
 
-RULE 9: Define a clear stopping point. No open-ended scope.
+RULE 9: Define a clear stopping point. No open-ended scope. The only mid-run halt permitted is the single NEEDS INPUT clarification pause defined in RULE 4A.
 
 Before presenting the prompt, run the following quality check silently and fix any failures before output:
 1. Does it begin with the four-file read sequence?
@@ -48,6 +50,7 @@ Before presenting the prompt, run the following quality check silently and fix a
 7. Is the scope bounded with a defined stopping point?
 8. Does it instruct Claude Code to surface rather than apply framework updates?
 9. Is it plain text with no markdown formatting inside the code block?
+10. Does the prompt run continuously through all steps with no "stop/halt/wait before Step N" phrasing, pausing only for a single NEEDS INPUT question after the first step (RULE 4A)?
 
 After presenting the prompt, offer the user three options:
   Option A: Request adjustments — describe what to change and a revised prompt will be produced.
@@ -58,11 +61,14 @@ If the user says "runfull" (or any clear variant like "run full", "run it full",
 
   Step 1: Write the exact prompt text (the contents of the code block, no surrounding markdown) to /tmp/nepi_prompt_run.txt using the Write tool.
 
-  Step 2: Launch the run in the background using the Bash tool with run_in_background set to true, so it is not bound by the 10-minute foreground timeout. Redirect all output to a log file:
-    "$CLAUDE_CODE_EXECPATH" --dangerously-skip-permissions -p "$(cat /tmp/nepi_prompt_run.txt)" > /tmp/nepi_prompt_run.log 2>&1
+  Step 2: Mint a fixed session id so the run can be resumed later, then launch it in the background using the Bash tool with run_in_background set to true, so it is not bound by the 10-minute foreground timeout. Redirect all output to a log file:
+    SID=$(uuidgen); echo "$SID" > /tmp/nepi_prompt_run.sid
+    "$CLAUDE_CODE_EXECPATH" --dangerously-skip-permissions --session-id "$SID" -p "$(cat /tmp/nepi_prompt_run.txt)" > /tmp/nepi_prompt_run.log 2>&1
   All file edits and bash commands proceed without any permission prompts. Do not wait synchronously — the background process keeps running across turns and re-invokes you when it exits.
 
-  Step 3: When the background subprocess exits, read /tmp/nepi_prompt_run.log and report a one-sentence summary of what was completed or any errors encountered.
+  Step 3: When the background subprocess exits, read /tmp/nepi_prompt_run.log. If the run paused for clarification (its final output is a line beginning NEEDS INPUT:), relay that question to the user verbatim and do NOT report completion — the run is not done. When the user answers, resume the same session with their answer, appending to the same log:
+    "$CLAUDE_CODE_EXECPATH" --dangerously-skip-permissions --resume "$(cat /tmp/nepi_prompt_run.sid)" -p "<the user's answer>" >> /tmp/nepi_prompt_run.log 2>&1
+  Re-check for a trailing NEEDS INPUT: line after each resume; keep resuming until the run finishes without one. Otherwise (no NEEDS INPUT: line), report a one-sentence summary of what was completed or any errors encountered.
 
   To watch progress live while the background run is going, tell the user they can run in a terminal:
     tail -f /tmp/nepi_prompt_run.log | grep --line-buffered '===== STEP'
@@ -72,11 +78,14 @@ If the user says "runwatch" (or any clear variant like "run watch", "run it watc
 
   Step 1: Write the exact prompt text (the contents of the code block, no surrounding markdown) to /tmp/nepi_prompt_run.txt using the Write tool.
 
-  Step 2: Execute via Bash with a timeout of 600000ms:
-    "$CLAUDE_CODE_EXECPATH" -p "$(cat /tmp/nepi_prompt_run.txt)"
+  Step 2: Mint a fixed session id, then execute via Bash with a timeout of 600000ms:
+    SID=$(uuidgen); echo "$SID" > /tmp/nepi_prompt_run.sid
+    "$CLAUDE_CODE_EXECPATH" --session-id "$SID" -p "$(cat /tmp/nepi_prompt_run.txt)"
   Permission prompts will appear in the terminal as normal. The user approves or denies each action. This runs in the foreground, so the 10-minute maximum applies — if the run exceeds it, the subprocess is killed (exit 143) and returns no final report. For long automated runs that do not need per-action approval, use runfull instead.
 
-  Step 3: After the subprocess finishes, report a one-sentence summary of what was completed or any errors encountered.
+  Step 3: After the subprocess finishes, check its output. If it ends in a line beginning NEEDS INPUT:, relay that question to the user and do NOT report completion; when the user answers, resume the same session:
+    "$CLAUDE_CODE_EXECPATH" --resume "$(cat /tmp/nepi_prompt_run.sid)" -p "<the user's answer>"
+  and repeat until it finishes without a NEEDS INPUT: line. Otherwise, report a one-sentence summary of what was completed or any errors encountered.
 
 In both run modes, run the command from the working directory /home/production/nepi_engine_ws.
 
