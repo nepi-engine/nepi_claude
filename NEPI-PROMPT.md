@@ -57,23 +57,25 @@ After presenting the prompt, offer the user three options:
   Option B: "runfull" — execute fully automated with no permission prompts of any kind.
   Option C: "runwatch" — execute normally, pausing for permission prompts so the user can approve each action.
 
-CONCURRENT RUNS: Multiple prompts may run at the same time. Each run gets its own set of state files (.txt, .sid, .log) identified by a slot number, so runs never clobber each other. Before launching in either run mode, allocate a free slot with the Bash tool:
-    RUN=/tmp/nepi_prompt_run; if [ -e "$RUN.txt" ]; then i=2; while [ -e "${RUN}_$i.txt" ]; do i=$((i+1)); done; RUN="${RUN}_$i"; fi; : > "$RUN.txt"; echo "$RUN"
-The first run uses /tmp/nepi_prompt_run; the next free slot is /tmp/nepi_prompt_run_2, then _3, and so on. The command prints the concrete base path for this run and reserves it by creating an empty placeholder .txt. Below, <RUN> stands for that concrete base path (for example /tmp/nepi_prompt_run_2). Remember it for the rest of the conversation, and substitute it literally into every subsequent command for this run — shell variables do not persist between separate Bash tool calls, so do not rely on $RUN after the allocation command. To list all active runs at any time: ls /tmp/nepi_prompt_run*.txt
+CONCURRENT RUNS: Multiple prompts may run at the same time. Each run gets its own set of state files (.txt, .sid, .log) identified by a slot number, so runs never clobber each other. Before launching in either run mode, prune dead slots and allocate a free one with a single Bash tool call:
+    for f in /tmp/nepi_prompt_run*.sid; do [ -e "$f" ] || continue; b="${f%.sid}"; s=$(cat "$f" 2>/dev/null); [ -n "$s" ] && pgrep -f "$s" >/dev/null && continue; tail -n 5 "$b.log" 2>/dev/null | grep -q '^NEEDS INPUT:' && continue; rm -f "$b.txt" "$b.sid" "$b.log"; done; RUN=/tmp/nepi_prompt_run; if [ -e "$RUN.sid" ]; then i=2; while [ -e "${RUN}_$i.sid" ]; do i=$((i+1)); done; RUN="${RUN}_$i"; fi; uuidgen > "$RUN.sid"; rm -f "$RUN.txt" "$RUN.log"; echo "$RUN"
+The prune step deletes the state files of any slot whose session id has no live process, unless that slot's log ends in a NEEDS INPUT: line — those slots belong to runs paused for clarification and must survive. Allocation then reserves the slot with its .sid file (which also holds the session id for this run) and removes any leftover .txt and .log for that slot, so the Write tool always creates the prompt file fresh. Never leave a placeholder .txt behind for Write to overwrite: Write refuses to overwrite a file that has not been read in the current conversation, and that is what causes a "Write failed" on the prompt file.
+
+The first run uses /tmp/nepi_prompt_run; the next free slot is /tmp/nepi_prompt_run_2, then _3, and so on. The command prints the concrete base path for this run. Below, <RUN> stands for that concrete base path (for example /tmp/nepi_prompt_run_2). Remember it for the rest of the conversation, and substitute it literally into every subsequent command for this run — shell variables do not persist between separate Bash tool calls, so do not rely on $RUN after the allocation command. To list all active runs at any time: ls /tmp/nepi_prompt_run*.sid
 
 If the user says "runfull" (or any clear variant like "run full", "run it full", "full run"):
 
-  Step 1: Allocate a slot as above, then write the exact prompt text (the contents of the code block, no surrounding markdown) to this run's <RUN>.txt (for example /tmp/nepi_prompt_run_2.txt) using the Write tool, overwriting the placeholder.
+  Step 1: Allocate a slot as above. The allocation removed any leftover .txt for that slot, so write the exact prompt text (the contents of the code block, no surrounding markdown) to this run's <RUN>.txt (for example /tmp/nepi_prompt_run_2.txt) with the Write tool as a new file. Do not Read it first — nothing is there.
 
-  Step 2: Mint a fixed session id so the run can be resumed later, then launch it in the background using the Bash tool with run_in_background set to true, so it is not bound by the 10-minute foreground timeout. Redirect all output to this run's log file (substitute the concrete <RUN> path):
-    SID=$(uuidgen); echo "$SID" > <RUN>.sid
-    "$CLAUDE_CODE_EXECPATH" --dangerously-skip-permissions --session-id "$SID" -p "$(cat <RUN>.txt)" > <RUN>.log 2>&1
+  Step 2: The session id was already minted into <RUN>.sid by the allocation command, so the run can be resumed later. Launch it in the background using the Bash tool with run_in_background set to true, so it is not bound by the 10-minute foreground timeout. Redirect all output to this run's log file (substitute the concrete <RUN> path):
+    "$CLAUDE_CODE_EXECPATH" --dangerously-skip-permissions --session-id "$(cat <RUN>.sid)" -p "$(cat <RUN>.txt)" > <RUN>.log 2>&1
   All file edits and bash commands proceed without any permission prompts. Do not wait synchronously — the background process keeps running across turns and re-invokes you when it exits.
 
   Step 3: When the background subprocess exits, read this run's <RUN>.log. If the run paused for clarification (its final output is a line beginning NEEDS INPUT:), relay that question to the user verbatim and do NOT report completion and do NOT delete the slot files — the run is not done. When the user answers, resume the same session with their answer, appending to the same log:
     "$CLAUDE_CODE_EXECPATH" --dangerously-skip-permissions --resume "$(cat <RUN>.sid)" -p "<the user's answer>" >> <RUN>.log 2>&1
   Re-check for a trailing NEEDS INPUT: line after each resume; keep resuming until the run finishes without one. Once the run finishes without a NEEDS INPUT: line, report a one-sentence summary of what was completed or any errors encountered, then free the slot by deleting this run's state files:
     rm -f <RUN>.txt <RUN>.sid <RUN>.log
+  Free the slot on every terminal outcome, not just success — a run that errored out, was killed, or produced nothing still gets its state files deleted. The only case that keeps them is a run paused at NEEDS INPUT:. Deleting the files is the last action of the run; do it in the same turn you report the summary, so no stale .txt is left to collide with the next prompt.
 
   To watch progress live while the background run is going, tell the user they can run in a terminal (using this run's concrete log path):
     tail -f <RUN>.log | grep --line-buffered '===== STEP'
@@ -81,17 +83,17 @@ If the user says "runfull" (or any clear variant like "run full", "run it full",
 
 If the user says "runwatch" (or any clear variant like "run watch", "run it watch", "watch run"):
 
-  Step 1: Allocate a slot as above, then write the exact prompt text (the contents of the code block, no surrounding markdown) to this run's <RUN>.txt using the Write tool, overwriting the placeholder.
+  Step 1: Allocate a slot as above. The allocation removed any leftover .txt for that slot, so write the exact prompt text (the contents of the code block, no surrounding markdown) to this run's <RUN>.txt with the Write tool as a new file. Do not Read it first — nothing is there.
 
-  Step 2: Mint a fixed session id, then execute via Bash with a timeout of 600000ms (substitute the concrete <RUN> path):
-    SID=$(uuidgen); echo "$SID" > <RUN>.sid
-    "$CLAUDE_CODE_EXECPATH" --session-id "$SID" -p "$(cat <RUN>.txt)"
+  Step 2: The session id is already in <RUN>.sid from the allocation command. Execute via Bash with a timeout of 600000ms (substitute the concrete <RUN> path):
+    "$CLAUDE_CODE_EXECPATH" --session-id "$(cat <RUN>.sid)" -p "$(cat <RUN>.txt)"
   Permission prompts will appear in the terminal as normal. The user approves or denies each action. This runs in the foreground, so the 10-minute maximum applies — if the run exceeds it, the subprocess is killed (exit 143) and returns no final report. For long automated runs that do not need per-action approval, use runfull instead.
 
   Step 3: After the subprocess finishes, check its output. If it ends in a line beginning NEEDS INPUT:, relay that question to the user and do NOT report completion and do NOT delete the slot files; when the user answers, resume the same session:
     "$CLAUDE_CODE_EXECPATH" --resume "$(cat <RUN>.sid)" -p "<the user's answer>"
   and repeat until it finishes without a NEEDS INPUT: line. Once it finishes without a NEEDS INPUT: line, report a one-sentence summary of what was completed or any errors encountered, then free the slot by deleting this run's state files:
     rm -f <RUN>.txt <RUN>.sid <RUN>.log
+  As in runfull, free the slot on every terminal outcome — completion, error, or a subprocess killed by the 10-minute timeout (exit 143). The only case that keeps the files is a run paused at NEEDS INPUT:.
 
 In both run modes, run the command from the working directory /home/production/nepi_engine_ws.
 
