@@ -2,6 +2,20 @@
 
 When a user message begins with "prompt:", treat everything after that word as a prompt generation request. Do not enter prompt generation mode for any other input — respond to all other messages normally as Claude Code.
 
+## WORKSPACE ROOT
+
+This file must work for anyone who has a nepi_engine_ws checkout, on any machine and any account — native Linux, WSL, or a container. Never assume a specific home directory, user name, or absolute prefix such as /home/production. There is no fixed location for the workspace.
+
+Resolve the workspace root once, at the start of prompt generation, and use it for everything afterwards:
+
+1. Run `git rev-parse --show-toplevel` from the current working directory. If the result is a directory containing `src/nepi_claude`, that is the workspace root.
+2. If that fails or the result does not contain `src/nepi_claude`, walk up from the current working directory looking for a directory that contains `src/nepi_claude`.
+3. If neither finds it, ask the user: "What is the full path to your nepi_engine_ws checkout?" Do not search the filesystem for it.
+
+Below, <WS> stands for the resolved workspace root. Every path written into a generated prompt is relative to <WS> (for example `src/nepi_claude/NEPI-LORE.md`, `src/nepi_engine/nepi_api/...`), never absolute. Absolute paths belong only in shell commands where they are unavoidable, and there they are built from <WS>, not typed literally.
+
+## CLARIFYING QUESTIONS
+
 When "prompt:" is detected, check whether you have enough information to define a clear MVP boundary. If the task description is missing any of the following, ask one specific question to fill the gap before drafting:
 
 - Which submodule or repo path is affected (if not obvious from the task)
@@ -10,18 +24,33 @@ When "prompt:" is detected, check whether you have enough information to define 
 
 Only ask one clarifying question at a time. If the task is clear enough to draft, draft it without asking.
 
+## BOUNDED DISCOVERY — ASK, DO NOT HUNT
+
+Prompt generation is a drafting step, not an investigation. Locating the files a prompt will target must be fast. Apply a hard search budget:
+
+- At most three targeted lookups per unknown file, directory, or symbol — a Glob against the expected package layout, a Grep scoped to one submodule, or a single `ls` of a known directory.
+- Never run a recursive search across the whole workspace, across all submodules, or across the user's home directory.
+- Never launch subagents to find a path.
+- Do not read files to confirm a path exists; the path existing is enough.
+
+If those lookups do not find it, stop searching and ask the user one specific question naming what is missing and the best guess at where it should be — for example: "I could not find the pan/tilt app package. Is it at src/nepi_apps/nepi_app_pan_tilt_auto, or somewhere else in your checkout?" Ask this before drafting, not after. One unfound thing is one question; if several are missing, ask about them together in a single message rather than one round trip each.
+
+A prompt may legitimately reference a path that does not exist yet — that is normal for Creation tasks. Only ask when the path is supposed to already exist and cannot be found.
+
 When you have enough information, produce the prompt as a plain text code block following these rules:
 
 RULE 1: Plain text only inside the code block. No markdown formatting, no bold, no # headers, no bullet points.
 
-RULE 2: Begin with the framework file read sequence, adapted to the task:
+RULE 2: Begin with the framework file read sequence, adapted to the task. All paths are relative to the workspace root, which is the directory the run starts in:
   Read src/nepi_claude/NEPI-LORE.md in full.
   Read src/nepi_claude/NEPI-CODEX.md in full.
   Read the top-level CLAUDE.md in full.
   Read src/<submodule>/CLAUDE.md in full.
   Do not take any action until you have read all documents.
 
-RULE 3: State the target repo and exact path being modified.
+RULE 3: State the target repo and exact path being modified, as a path relative to the workspace root. Never write an absolute path, a home directory, or a user name into a generated prompt — the person running it may have the workspace anywhere, including a WSL home directory nested several levels deep. If the prompt needs the run to know the root, tell it to resolve it with `git rev-parse --show-toplevel` rather than stating a location.
+
+RULE 3A: Carry the search budget into the generated prompt. Instruct the run to locate files by their stated relative paths and, if something expected is missing, to raise it as the RULE 4A NEEDS INPUT question rather than searching the workspace for it.
 
 RULE 4: Sequence the work as numbered steps. At the start of each step, print a single-line banner exactly in the form ===== STEP n/N: <short title> ===== so progress is greppable in the run log. At the end of each step, print a brief report of what that step found or changed, then continue immediately into the next step within the same run. The report is a checkpoint, not a stopping point. Never instruct Claude Code to stop, halt, pause, wait, or "stop before Step N" between steps — in a headless run that phrasing is read literally and terminates the run after the first step. The run proceeds through all N steps in a single pass and stops only at the end, or at the one clarification pause defined in RULE 4A.
 
@@ -51,6 +80,8 @@ Before presenting the prompt, run the following quality check silently and fix a
 8. Does it instruct Claude Code to surface rather than apply framework updates?
 9. Is it plain text with no markdown formatting inside the code block?
 10. Does the prompt run continuously through all steps with no "stop/halt/wait before Step N" phrasing, pausing only for a single NEEDS INPUT question after the first step (RULE 4A)?
+11. Is every path in the prompt relative to the workspace root, with no absolute path, no home directory, and no user name anywhere in the text?
+12. Was every path in the prompt either confirmed within the three-lookup budget, expected not to exist yet (Creation), or asked about before drafting — with no workspace-wide search performed?
 
 After presenting the prompt, offer the user three options:
   Option A: Request adjustments — describe what to change and a revised prompt will be produced.
@@ -58,7 +89,7 @@ After presenting the prompt, offer the user three options:
   Option C: "runwatch" — execute normally, pausing for permission prompts so the user can approve each action.
 
 CONCURRENT RUNS: Multiple prompts may run at the same time. Each run gets its own set of state files (.txt, .sid, .log) identified by a slot number, so runs never clobber each other. Before launching in either run mode, prune dead slots and allocate a free one with a single Bash tool call:
-    for f in /tmp/nepi_prompt_run*.sid; do [ -e "$f" ] || continue; b="${f%.sid}"; s=$(cat "$f" 2>/dev/null); [ -n "$s" ] && pgrep -f "$s" >/dev/null && continue; tail -n 5 "$b.log" 2>/dev/null | grep -q '^NEEDS INPUT:' && continue; rm -f "$b.txt" "$b.sid" "$b.log"; done; RUN=/tmp/nepi_prompt_run; if [ -e "$RUN.sid" ]; then i=2; while [ -e "${RUN}_$i.sid" ]; do i=$((i+1)); done; RUN="${RUN}_$i"; fi; uuidgen > "$RUN.sid"; rm -f "$RUN.txt" "$RUN.log"; echo "$RUN"
+    for f in /tmp/nepi_prompt_run*.sid; do [ -e "$f" ] || continue; b="${f%.sid}"; s=$(cat "$f" 2>/dev/null); [ -n "$s" ] && pgrep -f "$s" >/dev/null && continue; tail -n 5 "$b.log" 2>/dev/null | grep -q '^NEEDS INPUT:' && continue; rm -f "$b.txt" "$b.sid" "$b.log"; done; RUN=/tmp/nepi_prompt_run; if [ -e "$RUN.sid" ]; then i=2; while [ -e "${RUN}_$i.sid" ]; do i=$((i+1)); done; RUN="${RUN}_$i"; fi; { uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid; } > "$RUN.sid"; rm -f "$RUN.txt" "$RUN.log"; echo "$RUN"
 The prune step deletes the state files of any slot whose session id has no live process, unless that slot's log ends in a NEEDS INPUT: line — those slots belong to runs paused for clarification and must survive. Allocation then reserves the slot with its .sid file (which also holds the session id for this run) and removes any leftover .txt and .log for that slot, so the Write tool always creates the prompt file fresh. Never leave a placeholder .txt behind for Write to overwrite: Write refuses to overwrite a file that has not been read in the current conversation, and that is what causes a "Write failed" on the prompt file.
 
 The first run uses /tmp/nepi_prompt_run; the next free slot is /tmp/nepi_prompt_run_2, then _3, and so on. The command prints the concrete base path for this run. Below, <RUN> stands for that concrete base path (for example /tmp/nepi_prompt_run_2). Remember it for the rest of the conversation, and substitute it literally into every subsequent command for this run — shell variables do not persist between separate Bash tool calls, so do not rely on $RUN after the allocation command. To list all active runs at any time: ls /tmp/nepi_prompt_run*.sid
@@ -95,6 +126,8 @@ If the user says "runwatch" (or any clear variant like "run watch", "run it watc
     rm -f <RUN>.txt <RUN>.sid <RUN>.log
   As in runfull, free the slot on every terminal outcome — completion, error, or a subprocess killed by the 10-minute timeout (exit 143). The only case that keeps the files is a run paused at NEEDS INPUT:.
 
-In both run modes, run the command from the working directory /home/production/nepi_engine_ws.
+In both run modes, run the command from the workspace root <WS> resolved at the start of prompt generation. Do not type a workspace path literally — use the resolved root, whatever it is on this machine.
+
+State files live under the system temp directory, which is /tmp on Linux, WSL, and containers alike. If /tmp is not writable in the user's environment, use the session scratchpad directory instead and substitute it for /tmp everywhere above.
 
 If the user types "prompt:" with nothing after it, respond: Please describe the task after "prompt:" and include the target submodule if known.
